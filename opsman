@@ -1,0 +1,84 @@
+#!/bin/bash
+
+set -e
+
+shopt -s expand_aliases
+
+alias uaac='BUNDLE_GEMFILE=/home/tempest-web/tempest/web/vendor/uaac/Gemfile bundle exec uaac'
+
+LOCAL_FILE_NAME_RAW="manifest.response"
+LOCAL_FILE_NAME_YAML="manifest.yml"
+
+usage_and_exit() {
+  cat <<EOF
+Usage: opsman <command> [options]
+Examples:
+  opsman login
+  opsman manifest raw
+  opsman manifest yaml
+EOF
+  exit 1
+}
+
+error_and_exit() {
+  echo "$1" && exit 1
+}
+
+login_to_uaac() {
+  local OPSMAN_USER=<insert opsman admin user here>
+
+  local OPSMAN_PASS=<insert opsman password here>
+
+  uaac target https://localhost/uaa --skip-ssl-validation
+
+  uaac token owner get opsman "$OPSMAN_USER" -p "$OPSMAN_PASS" -s ''
+
+  echo "User $OPSMAN_USER logged in successfully."
+}
+
+is_valid_access_token() {
+  local UAA_ACCESS_TOKEN=$1
+  [ -n "$UAA_ACCESS_TOKEN" ] || return 1
+
+  local STATUS_CODE=$(curl http://localhost/uaa/check_token -k -L -G \
+    -s -o /dev/null -w "%{http_code}" \
+    -u "opsman:" \
+    -d token_type=bearer \
+    -d token="$UAA_ACCESS_TOKEN")
+
+    [ "200" = "$STATUS_CODE" ]
+}
+
+get_deployment_manifest() {
+    local UAA_ACCESS_TOKEN=$(uaac context | grep access_token | awk '{ print $2 }')
+
+    if ! is_valid_access_token "$UAA_ACCESS_TOKEN"; then
+        login_to_uaac
+        UAA_ACCESS_TOKEN=$(uaac context | grep access_token | awk '{ print $2 }')
+    fi
+
+    uaac curl "https://localhost/api/v0/staged/director/manifest" -k -X GET > $LOCAL_FILE_NAME_RAW
+}
+
+convert_to_yml() {
+  sed -i '1,/RESPONSE BODY:/d' $LOCAL_FILE_NAME_RAW
+  ruby -ryaml -rjson -e 'puts YAML.dump(JSON.parse(STDIN.read))' < $LOCAL_FILE_NAME_RAW > $LOCAL_FILE_NAME_YAML
+}
+
+CMD=$1 ARG=$2
+
+if [ "login" = "$CMD" ]; then
+  login_to_uaac
+elif [ "manifest" = "$CMD" ]; then
+  if [ "raw" = "$ARG" ]; then
+    get_deployment_manifest
+  elif [ "yaml" = "$ARG" ]; then
+    get_deployment_manifest
+    convert_to_yml
+  else
+    usage_and_exit
+  fi
+else
+  usage_and_exit
+fi
+
